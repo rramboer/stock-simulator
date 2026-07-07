@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Run tests
+        run: uv run pytest --cov=stock_simulator --cov-report=term-missing
+
+      - name: Headless chart generation smoke test
+        run: |
+          uv run stock-simulator --seed 42 --steps 50 \
+            --price-chart out/price_chart.png --investor-chart out/investor_chart.png
+          test -s out/price_chart.png
+          test -s out/investor_chart.png
