@@ -1,0 +1,53 @@
+[project]
+name = "stock-simulator"
+version = "1.0.0"
+description = "Agent-based Monte Carlo simulator of stock rallies and crashes driven by investor sentiment, FOMO, and panic."
+readme = "README.md"
+authors = [{ name = "Ryan Ramboer" }]
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = ["matplotlib>=3.9"]
+keywords = ["monte-carlo", "simulation", "stock-market", "agent-based-model"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+[project.urls]
+Repository = "https://github.com/rramboer/stock-simulator"
+
+[project.scripts]
+stock-simulator = "stock_simulator.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-cov>=6.0", "ruff>=0.17"]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific rules
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

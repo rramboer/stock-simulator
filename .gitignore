@@ -1,1 +1,25 @@
-.vscode
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+
+# Generated simulation output (the example charts committed in the repo root stay tracked)
+out/
