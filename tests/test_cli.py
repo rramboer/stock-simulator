@@ -98,21 +98,52 @@ def test_invalid_sentiment_rejected():
     [
         ["--investors", "0"],
         ["--trades", "-1"],
+        ["--trades", "100"],  # 100 investors have only 99 counterparties each
         ["--steps", "0"],
+        ["--fomo-threshold", "1.5"],
+        ["--fomo-threshold", "-0.1"],
+        ["--panic-prob", "2"],
+        ["--shock-prob", "-1"],
+        ["--shock-prob", "1.01"],
+        ["--narrative-half-life", "0"],
+        ["--value-pull", "-1"],
     ],
 )
-def test_invalid_numeric_arguments_rejected(argv):
-    with pytest.raises(SystemExit):
+def test_invalid_numeric_arguments_rejected(argv, capsys):
+    with pytest.raises(SystemExit) as excinfo:
         main(argv)
+    assert excinfo.value.code == 2
+    assert "error:" in capsys.readouterr().err
 
 
-def test_parser_defaults_match_original_model():
+def test_zero_trades_is_allowed(tmp_path):
+    exit_code = main(
+        [
+            "--trades",
+            "0",
+            "--seed",
+            "5",
+            "--steps",
+            "10",
+            "--price-chart",
+            str(tmp_path / "price.png"),
+            "--investor-chart",
+            str(tmp_path / "investors.png"),
+        ]
+    )
+    assert exit_code == 0
+
+
+def test_parser_defaults():
     args = build_parser().parse_args([])
     assert args.sentiment == "VERY_BEAR"
     assert args.investors == 100
     assert args.trades == 5
     assert args.fomo_threshold == 0.5
     assert args.panic_prob == 0.2
+    assert args.shock_prob == 0.025
+    assert args.narrative_half_life == 50.0
+    assert args.value_pull == 0.0
     assert args.steps == 500
     assert args.seed is None
     assert args.price_chart == "price_chart.png"

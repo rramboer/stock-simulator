@@ -1,6 +1,6 @@
 [project]
 name = "stock-simulator"
-version = "1.0.0"
+version = "2.0.0"
 description = "Agent-based Monte Carlo simulator of stock rallies and crashes driven by investor sentiment, FOMO, and panic."
 readme = "README.md"
 authors = [{ name = "Ryan Ramboer" }]

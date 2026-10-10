@@ -21,7 +21,7 @@ _DEFAULTS = SimulationConfig()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser (defaults match the original hardcoded model)."""
+    """Build the argument parser."""
     parser = argparse.ArgumentParser(
         prog="stock-simulator",
         description=(
@@ -34,7 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--sentiment",
         choices=sorted(SENTIMENT_SKEWS),
         default=DEFAULT_SENTIMENT,
-        help=f"initial market sentiment skew (default: {DEFAULT_SENTIMENT})",
+        help=(
+            "narrative sentiment of the social event the run starts just after "
+            f"(default: {DEFAULT_SENTIMENT})"
+        ),
     )
     parser.add_argument(
         "--investors",
@@ -46,15 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--trades",
         type=int,
         default=_DEFAULTS.num_trades,
-        help=f"trades per investor per time step (default: {_DEFAULTS.num_trades})",
+        help=(
+            "distinct counterparties each investor trades with per time step; "
+            f"0 disables trading (default: {_DEFAULTS.num_trades})"
+        ),
     )
     parser.add_argument(
         "--fomo-threshold",
         type=float,
         default=_DEFAULTS.fomo_threshold,
         help=(
-            "susceptibility to FOMO in (0, 1]; 0 is none, 1 is maximum "
-            f"(default: {_DEFAULTS.fomo_threshold})"
+            "per-step probability that an investor chases the last price move, "
+            f"in [0, 1] (default: {_DEFAULTS.fomo_threshold})"
         ),
     )
     parser.add_argument(
@@ -62,7 +68,38 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=_DEFAULTS.panic_prob,
         help=(
-            f"per-step probability that an investor panic trades (default: {_DEFAULTS.panic_prob})"
+            "per-step probability that an investor panics and reverses sentiment, "
+            f"in [0, 1] (default: {_DEFAULTS.panic_prob})"
+        ),
+    )
+    parser.add_argument(
+        "--shock-prob",
+        type=float,
+        default=_DEFAULTS.shock_prob,
+        help=(
+            "per-step probability of an exogenous market shock that rescales the "
+            f"price by a factor in [0.75, 1.25), in [0, 1] (default: {_DEFAULTS.shock_prob})"
+        ),
+    )
+    parser.add_argument(
+        "--narrative-half-life",
+        type=float,
+        default=_DEFAULTS.narrative_half_life,
+        metavar="STEPS",
+        help=(
+            "steps for the social event's pull on sentiment to halve; use inf for a "
+            f"story that never fades (default: {_DEFAULTS.narrative_half_life:g})"
+        ),
+    )
+    parser.add_argument(
+        "--value-pull",
+        type=float,
+        default=_DEFAULTS.value_pull,
+        metavar="RATE",
+        help=(
+            "sentiment lost per step per unit of ln(price / start price), leaning the "
+            "crowd against how far the price has strayed; 0 lets a repriced stock stay "
+            f"repriced, around 0.1 makes squeezes collapse (default: {_DEFAULTS.value_pull:g})"
         ),
     )
     parser.add_argument(
@@ -71,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STEPS,
         help=(
             "maximum number of time steps; the run stops early if the price "
-            f"hits zero (default: {DEFAULT_STEPS})"
+            f"reaches zero (default: {DEFAULT_STEPS})"
         ),
     )
     parser.add_argument(
@@ -115,20 +152,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run a simulation, save both charts, and print the price summary."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.investors < 1:
-        parser.error("--investors must be at least 1")
-    if args.trades < 0:
-        parser.error("--trades must not be negative")
     if args.steps < 1:
         parser.error("--steps must be at least 1")
 
-    config = SimulationConfig(
-        num_investors=args.investors,
-        num_trades=args.trades,
-        fomo_threshold=args.fomo_threshold,
-        panic_prob=args.panic_prob,
-        sentiment_skew=SENTIMENT_SKEWS[args.sentiment],
-    )
+    try:
+        config = SimulationConfig(
+            num_investors=args.investors,
+            num_trades=args.trades,
+            fomo_threshold=args.fomo_threshold,
+            panic_prob=args.panic_prob,
+            shock_prob=args.shock_prob,
+            narrative_half_life=args.narrative_half_life,
+            value_pull=args.value_pull,
+            sentiment_skew=SENTIMENT_SKEWS[args.sentiment],
+        )
+    except ValueError as error:
+        parser.error(str(error))
+
     simulation = Simulation(config, rng=random.Random(args.seed))
     simulation.run(args.steps)
 
@@ -148,8 +188,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     history = simulation.price_history
     current = history[-1]
     previous = history[-2] if len(history) > 1 else current
+    daily = percent_change(previous, current) if previous > 0 else 0.0
     print(f"Current Price: {current:.2f}")
-    print(f"Percent Change (DAILY): {percent_change(previous, current):.2f}%")
+    print(f"Percent Change (DAILY): {daily:.2f}%")
     print(f"Percent Change (ALL TIME): {percent_change(config.start_price, current):.2f}%")
     if args.verbose:
         _print_market_stats(simulation, args.sentiment)
