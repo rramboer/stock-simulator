@@ -13,6 +13,8 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 
@@ -23,10 +25,10 @@ Repository = "https://github.com/rramboer/stock-simulator"
 stock-simulator = "stock_simulator.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-cov>=6.0", "ruff>=0.15"]
+dev = ["pytest>=8.3", "pytest-cov>=6.0", "ruff>=0.17"]
 
 [build-system]
-requires = ["uv_build>=0.11.0,<0.13.0"]
+requires = ["uv_build>=0.11.0,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.ruff]
