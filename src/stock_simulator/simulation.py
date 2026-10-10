@@ -6,10 +6,11 @@ BUY/HOLD/SELL state, and the price return each step is proportional to the
 buy/sell imbalance (buyers minus sellers, as a fraction of the population)
 plus a little zero-mean noise.
 
-The run starts just after a social event -- a short squeeze, a doom
-narrative -- has pushed the crowd's sentiment one way. That *narrative*
-sentiment keeps pulling investors toward it, but fades with a configurable
-half-life. Fear-of-missing-out (FOMO) pulls each investor's sentiment toward
+A social event -- a short squeeze, a doom narrative -- hits at a configurable
+step (the first step by default) and jolts the crowd's sentiment one way.
+From then on that *narrative* sentiment keeps pulling investors toward it,
+fading with a configurable half-life; before the event the market is neutral.
+Fear-of-missing-out (FOMO) pulls each investor's sentiment toward
 the latest price move, so a move recruits more of the crowd and feeds on
 itself; panic flips an investor to the opposite camp; idiosyncratic noise
 keeps the crowd heterogeneous; and rare exogenous shocks jolt the price
@@ -52,8 +53,9 @@ DEFAULT_STEPS = 500
 # Sentiment above +STATE_THRESHOLD means BUY, below -STATE_THRESHOLD means SELL.
 STATE_THRESHOLD = 0.333
 
-# Weight of the narrative sentiment mixed into each investor's initial sentiment.
-INITIAL_SKEW_WEIGHT = 0.3
+# Sentiment shift every investor receives, toward the narrative, the moment
+# the social event hits.
+EVENT_JOLT = 0.3
 
 # Each investor's sentiment drifts by an idiosyncratic amount drawn uniformly
 # from [-SENTIMENT_NOISE, SENTIMENT_NOISE) every step (private news). This keeps
@@ -160,6 +162,9 @@ class SimulationConfig:
     narrative_half_life: float = DEFAULT_NARRATIVE_HALF_LIFE
     """Steps for the narrative's pull to halve (positive; ``math.inf`` never fades)."""
 
+    event_step: int = 0
+    """Step at which the social event hits (non-negative). Before it the market is neutral."""
+
     value_pull: float = 0.0
     """Sentiment lost per step per unit of ln(price / start_price), non-negative.
 
@@ -186,6 +191,8 @@ class SimulationConfig:
             raise ValueError("narrative_half_life must be positive")
         if self.value_pull < 0:
             raise ValueError("value_pull must be non-negative")
+        if self.event_step < 0:
+            raise ValueError("event_step must be non-negative")
 
 
 @dataclass
@@ -277,6 +284,8 @@ class Simulation:
         self.holders: list[int] = []
         self.sellers: list[int] = []
         self.investors: list[Investor] = self._create_investors()
+        if self.config.event_step == 0:
+            self._apply_event()
         self._record_states()
 
     def _create_investors(self) -> list[Investor]:
@@ -286,9 +295,8 @@ class Simulation:
         sentiments: list[float] = []
         weights: list[float] = []
         for _ in range(count):
-            # Uniform sentiment in [-1, 1), shifted by the narrative and clamped.
-            raw = (rng.random() * 2.0 - 1.0) + (config.sentiment_skew * INITIAL_SKEW_WEIGHT)
-            sentiments.append(_clamp_sentiment(raw))
+            # Uniform sentiment in [-1, 1); the event's jolt is applied separately.
+            sentiments.append(rng.random() * 2.0 - 1.0)
             weights.append(rng.uniform(HOLDINGS_WEIGHT_MIN, HOLDINGS_WEIGHT_MAX))
 
         # Largest-remainder rounding: floor each proportional share, then hand
@@ -306,6 +314,12 @@ class Simulation:
             for sentiment, holdings in zip(sentiments, whole, strict=True)
         ]
 
+    def _apply_event(self) -> None:
+        """The social event hits: jolt every investor's sentiment toward the narrative."""
+        shift = self.config.sentiment_skew * EVENT_JOLT
+        for investor in self.investors:
+            investor.sentiment = _clamp_sentiment(investor.sentiment + shift)
+
     def _record_states(self) -> None:
         num_buyers, num_holders, num_sellers = count_states(self.investors)
         self.buyers.append(num_buyers)
@@ -318,11 +332,14 @@ class Simulation:
         return len(self.price_history) - 1
 
     def narrative_sentiment(self) -> float:
-        """Return the social event's sentiment pull as of now, faded by its half-life."""
+        """Return the narrative's pull as of now: zero before the event, then fading."""
         config = self.config
+        age = self.steps_completed - config.event_step
+        if age < 0:
+            return 0.0
         if math.isinf(config.narrative_half_life):
             return config.sentiment_skew
-        return config.sentiment_skew * 0.5 ** (self.steps_completed / config.narrative_half_life)
+        return config.sentiment_skew * 0.5 ** (age / config.narrative_half_life)
 
     def mispricing(self) -> float:
         """Return ``ln(price / start_price)``, or 0.0 if the price has reached zero."""
@@ -349,6 +366,9 @@ class Simulation:
         """
         config, rng = self.config, self.rng
         count = config.num_investors
+
+        if config.event_step > 0 and self.steps_completed == config.event_step:
+            self._apply_event()
 
         # Freeze the aggregate picture entering this step so that every
         # investor trades and updates against the same market state.

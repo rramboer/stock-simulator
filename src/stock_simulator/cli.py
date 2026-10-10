@@ -34,10 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--sentiment",
         choices=sorted(SENTIMENT_SKEWS),
         default=DEFAULT_SENTIMENT,
-        help=(
-            "narrative sentiment of the social event the run starts just after "
-            f"(default: {DEFAULT_SENTIMENT})"
-        ),
+        help=(f"narrative sentiment of the social event (default: {DEFAULT_SENTIMENT})"),
     )
     parser.add_argument(
         "--investors",
@@ -89,6 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "steps for the social event's pull on sentiment to halve; use inf for a "
             f"story that never fades (default: {_DEFAULTS.narrative_half_life:g})"
+        ),
+    )
+    parser.add_argument(
+        "--event-step",
+        type=int,
+        default=_DEFAULTS.event_step,
+        metavar="STEP",
+        help=(
+            "time step at which the social event hits; the market is neutral before it "
+            f"(default: {_DEFAULTS.event_step})"
         ),
     )
     parser.add_argument(
@@ -163,6 +170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             panic_prob=args.panic_prob,
             shock_prob=args.shock_prob,
             narrative_half_life=args.narrative_half_life,
+            event_step=args.event_step,
             value_pull=args.value_pull,
             sentiment_skew=SENTIMENT_SKEWS[args.sentiment],
         )
@@ -176,6 +184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulation.price_history,
         args.price_chart,
         title=f"Stock Price (sentiment: {args.sentiment})",
+        event_step=config.event_step,
     )
     investor_path = save_investor_chart(
         simulation.buyers,
@@ -183,6 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         simulation.sellers,
         args.investor_chart,
         title=f"Investor States (sentiment: {args.sentiment})",
+        event_step=config.event_step,
     )
 
     history = simulation.price_history
