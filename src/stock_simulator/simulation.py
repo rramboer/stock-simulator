@@ -1,29 +1,41 @@
-"""Agent-based Monte Carlo model of a stock rally or crash.
+"""Agent-based Monte Carlo model of a stock rally or crash driven by a social event.
 
 A population of investors, each holding shares and carrying a sentiment in
 ``[-1, 1]``, trade with one another every time step. Sentiment maps to a
-BUY/HOLD/SELL state, and the stock price moves with the traded volume and the
-aggregate market sentiment. Fear-of-missing-out (FOMO) couples each investor's
-sentiment to the latest price move, panic randomly reverses sentiment, and
-rare exogenous market shocks jolt the price directly.
+BUY/HOLD/SELL state, and the price return each step is proportional to the
+buy/sell imbalance (buyers minus sellers, as a fraction of the population)
+plus a little zero-mean noise.
 
-The update rules and constants below are preserved exactly from the original
-model so that its published dynamics are unchanged.
+The run starts just after a social event -- a short squeeze, a doom
+narrative -- has pushed the crowd's sentiment one way. That *narrative*
+sentiment keeps pulling investors toward it, but fades with a configurable
+half-life. Fear-of-missing-out (FOMO) pulls each investor's sentiment toward
+the latest price move, so a move recruits more of the crowd and feeds on
+itself; panic flips an investor to the opposite camp; idiosyncratic noise
+keeps the crowd heterogeneous; and rare exogenous shocks jolt the price
+directly. An optional value pull (off by default, because a repriced stock
+need not return to where it started) leans everyone against the price's
+departure from its start, which makes bubbles pop and crashes get bought. Trading
+moves shares from sellers to buyers; the traded volume is recorded but does
+not itself move the price.
+
+All price dynamics are multiplicative (percent-based), so a run's percent
+trajectory does not depend on the starting price.
 """
 
 from __future__ import annotations
 
+import math
 import random
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # Investor states.
 BUY = 1
 SELL = -1
 HOLD = 0
 
-# Sentiment presets: the skew mixed into every investor's initial sentiment
-# (and targeted by the follow-the-market behavior).
+# Sentiment presets: the narrative sentiment of the social event.
 SENTIMENT_SKEWS: dict[str, float] = {
     "VERY_BEAR": -1.0,
     "BEARISH": -0.5,
@@ -32,56 +44,64 @@ SENTIMENT_SKEWS: dict[str, float] = {
     "VERY_BULL": 1.0,
 }
 
-# Defaults matching the original hardcoded configuration.
 DEFAULT_SENTIMENT = "VERY_BEAR"
 DEFAULT_STEPS = 500
 
-# --- Model constants (values preserved from the original model) -------------
+# --- Model constants ---------------------------------------------------------
 
 # Sentiment above +STATE_THRESHOLD means BUY, below -STATE_THRESHOLD means SELL.
 STATE_THRESHOLD = 0.333
 
-# Multiplier applied to sentiment when an investor panics: the sign flips and
-# the magnitude is damped.
-PANIC_REVERSAL = -0.66
-
-# Probability that an investor "follows the market" toward the sentiment skew.
-# NOTE: this branch shares a single random draw with the FOMO check and is
-# chained behind the panic check, so with the default FOMO threshold of 0.5 it
-# can only fire on steps where the FOMO adjustment also fired. Preserved
-# as-is because changing it would alter the simulation dynamics.
-FOLLOW_MARKET_PROB = 0.2
-
-# Weight of the sentiment skew when an investor follows the market.
-FOLLOW_MARKET_WEIGHT = 0.8
-
-# Weight of the sentiment skew mixed into each investor's initial sentiment.
+# Weight of the narrative sentiment mixed into each investor's initial sentiment.
 INITIAL_SKEW_WEIGHT = 0.3
 
-# Fraction of the remaining share pool that bounds each investor's initial
-# holdings (drawn between 1% and 10% of what is left).
-HOLDINGS_NORM_FRACTION = 0.1
+# Each investor's sentiment drifts by an idiosyncratic amount drawn uniformly
+# from [-SENTIMENT_NOISE, SENTIMENT_NOISE) every step (private news). This keeps
+# the population heterogeneous; without it the herding and panic rules pull
+# everyone to HOLD and the market freezes.
+SENTIMENT_NOISE = 0.3
 
-# The per-step price impact is amplified by a multiplier drawn uniformly from
-# [PRICE_NOISE_MIN, PRICE_NOISE_MAX). The draw's mean of +2 amplifies the
-# impact in the direction of aggregate sentiment (whether bullish or bearish);
-# negative draws occasionally flip it.
-PRICE_NOISE_MIN = -3.0
-PRICE_NOISE_MAX = 7.0
+# Sentiment change per percentage point of the last price move when an
+# investor chases it (FOMO).
+FOMO_SENSITIVITY = 0.1
 
-# An unforeseen market event rescales the price by a factor drawn uniformly
-# from [MARKET_SHOCK_MIN, MARKET_SHOCK_MAX); it occurs each step with
-# probability panic_prob / MARKET_EVENT_DIVISOR.
-MARKET_SHOCK_MIN = 0.75
-MARKET_SHOCK_MAX = 1.25
-MARKET_EVENT_DIVISOR = 8
+# Multiplier applied to sentiment when an investor panics: a contrarian flip
+# to the opposite camp with the magnitude damped.
+PANIC_REVERSAL = -0.66
+
+# Probability that a non-panicking investor follows the narrative, and how far
+# toward the current narrative sentiment they move (1.0 would snap onto it).
+FOLLOW_NARRATIVE_PROB = 0.2
+FOLLOW_NARRATIVE_WEIGHT = 0.8
+
+# Steps for the narrative's pull to halve. ``math.inf`` keeps it constant.
+DEFAULT_NARRATIVE_HALF_LIFE = 50.0
+
+# Fractional price change per unit of excess demand, where excess demand is
+# (buyers - sellers) / investors in [-1, 1]. At 0.04 a market that is entirely
+# buyers rises 4% per step before noise.
+PRICE_IMPACT = 0.04
+
+# Standard deviation of the zero-mean Gaussian return noise added each step.
+RETURN_NOISE = 0.01
+
+# An exogenous market shock rescales the price by a factor between
+# 1 / MARKET_SHOCK_MAX_FACTOR and MARKET_SHOCK_MAX_FACTOR, uniform in log space
+# so shocks carry no drift; it occurs each step with probability ``shock_prob``.
+MARKET_SHOCK_MAX_FACTOR = 1.25
+DEFAULT_SHOCK_PROB = 0.025
+
+# Initial holdings are proportional to a per-investor weight drawn uniformly
+# from this range, so the richest investor holds at most ten times the poorest
+# and the allocation does not depend on creation order.
+HOLDINGS_WEIGHT_MIN = 1.0
+HOLDINGS_WEIGHT_MAX = 10.0
 
 
 def percent_change(previous: float, current: float) -> float:
     """Return the percent change from ``previous`` to ``current`` (5.0 means +5%).
 
-    ``previous`` must be nonzero; the simulation guarantees this because a run
-    stops as soon as the price reaches zero.
+    ``previous`` must be nonzero.
     """
     if previous == 0:
         raise ValueError("previous price must be nonzero")
@@ -105,103 +125,143 @@ def count_states(investors: Sequence[Investor]) -> tuple[int, int, int]:
     return buyers, holders, sellers
 
 
+def _clamp_sentiment(sentiment: float) -> float:
+    return max(-1.0, min(1.0, sentiment))
+
+
 @dataclass(frozen=True)
 class SimulationConfig:
-    """Tunable parameters of the simulation (defaults match the original model)."""
+    """Tunable parameters of the simulation. Invalid values raise ``ValueError``."""
 
     num_investors: int = 100
-    """Number of investors in the market."""
+    """Number of investors in the market (at least 1)."""
 
     max_shares: int = 100_000
-    """Total number of stock shares outstanding."""
+    """Total number of stock shares outstanding (at least 1)."""
 
     start_price: float = 100.0
-    """Starting stock price."""
+    """Starting price (positive); also the reference for the optional value pull."""
 
     num_trades: int = 5
-    """Trades per investor per time step (the first pairing is a self-trade no-op)."""
+    """Distinct counterparties each investor trades with per step, 0..num_investors-1."""
 
     fomo_threshold: float = 0.5
-    """Susceptibility to FOMO in (0, 1]: 0 means none, 1 means maximum."""
+    """Probability per step that an investor chases the last price move, in [0, 1]."""
 
     panic_prob: float = 0.2
-    """Probability per step that an investor panic-trades (sentiment reverses)."""
+    """Probability per step that an investor panics (sentiment flips), in [0, 1]."""
+
+    shock_prob: float = DEFAULT_SHOCK_PROB
+    """Probability per step of an exogenous market shock, in [0, 1]."""
 
     sentiment_skew: float = SENTIMENT_SKEWS[DEFAULT_SENTIMENT]
-    """Market-wide sentiment bias in [-1, 1]; see SENTIMENT_SKEWS for presets."""
+    """Narrative sentiment of the social event in [-1, 1]; see SENTIMENT_SKEWS."""
+
+    narrative_half_life: float = DEFAULT_NARRATIVE_HALF_LIFE
+    """Steps for the narrative's pull to halve (positive; ``math.inf`` never fades)."""
+
+    value_pull: float = 0.0
+    """Sentiment lost per step per unit of ln(price / start_price), non-negative.
+
+    Off by default so a repriced stock can stay repriced. Around 0.1 a stock at
+    twice its start loses ~0.07 sentiment per step, enough to end a squeeze once
+    the narrative fades and to get a crash bought back.
+    """
+
+    def __post_init__(self) -> None:
+        if self.num_investors < 1:
+            raise ValueError("num_investors must be at least 1")
+        if self.max_shares < 1:
+            raise ValueError("max_shares must be at least 1")
+        if not self.start_price > 0:
+            raise ValueError("start_price must be positive")
+        if not 0 <= self.num_trades <= self.num_investors - 1:
+            raise ValueError("num_trades must be between 0 and num_investors - 1")
+        for name in ("fomo_threshold", "panic_prob", "shock_prob"):
+            if not 0.0 <= getattr(self, name) <= 1.0:
+                raise ValueError(f"{name} must be between 0 and 1")
+        if not -1.0 <= self.sentiment_skew <= 1.0:
+            raise ValueError("sentiment_skew must be between -1 and 1")
+        if not self.narrative_half_life > 0:
+            raise ValueError("narrative_half_life must be positive")
+        if self.value_pull < 0:
+            raise ValueError("value_pull must be non-negative")
 
 
 @dataclass
 class Investor:
     """A market participant with a sentiment in ``[-1, 1]`` and share holdings.
 
-    Holdings start as whole shares but become fractional through trading; this
-    is intentional, and the total across all investors is conserved.
+    Holdings start as whole shares but become fractional through trading; the
+    total across all investors is conserved.
     """
 
     sentiment: float
     holdings: float
-    state: int = field(init=False)
 
-    def __post_init__(self) -> None:
-        self.state = state_for_sentiment(self.sentiment)
+    @property
+    def state(self) -> int:
+        """BUY, HOLD, or SELL, always derived from the current sentiment."""
+        return state_for_sentiment(self.sentiment)
 
     def update_status(
         self,
-        mean_sentiment: float,
+        narrative: float,
         last_price_change: float,
+        mispricing: float,
         config: SimulationConfig,
         rng: random.Random,
     ) -> None:
-        """Apply the FOMO, panic, and follow-the-market rules, then refresh the state.
+        """Apply noise and any value pull, then the FOMO, panic, and narrative rules.
 
-        ``mean_sentiment`` is the market's average sentiment for this step and
-        ``last_price_change`` is the most recent percent price move (0.0 on the
-        first step).
+        Each probabilistic rule uses its own random draw. ``narrative`` is the
+        social event's current (faded) sentiment, ``last_price_change`` is the
+        most recent percent price move (0.0 on the first step), and
+        ``mispricing`` is ``ln(price / start_price)``.
         """
-        rand_val = rng.random()
-        if rand_val < config.fomo_threshold:
-            # FOMO: chase the latest price move. The percent change is in
-            # percent units (a 5% move adds 5.0) while sentiment lives in
-            # [-1, 1], so any move larger than ~1% saturates at the clamp
-            # below -- FOMO acts as a near-binary flip. Preserved as-is.
-            self.sentiment += last_price_change
+        # Private news, plus the optional lean against the price's departure from its start.
+        self.sentiment += rng.uniform(-SENTIMENT_NOISE, SENTIMENT_NOISE)
+        self.sentiment -= config.value_pull * mispricing
+        if rng.random() < config.fomo_threshold:
+            # FOMO: chase the latest price move, scaled into sentiment units.
+            self.sentiment += last_price_change * FOMO_SENSITIVITY
         if rng.random() < config.panic_prob:
-            # Panic: reverse and damp sentiment, nudged by the market mean
-            # scaled down again by the population size (as in the original).
-            self.sentiment = self.sentiment * PANIC_REVERSAL + (
-                mean_sentiment / config.num_investors
-            )
-        elif rand_val < FOLLOW_MARKET_PROB:
-            # Follow the market: snap toward the configured sentiment skew.
-            self.sentiment = config.sentiment_skew * FOLLOW_MARKET_WEIGHT
-        self.state = state_for_sentiment(self.sentiment)
-        # Sentiment boundary checking.
-        self.sentiment = max(-1.0, min(1.0, self.sentiment))
+            # Panic: contrarian reversal, damped.
+            self.sentiment *= PANIC_REVERSAL
+        elif rng.random() < FOLLOW_NARRATIVE_PROB:
+            # Follow the narrative: move most of the way toward the story.
+            self.sentiment += FOLLOW_NARRATIVE_WEIGHT * (narrative - self.sentiment)
+        self.sentiment = _clamp_sentiment(self.sentiment)
 
     def trade(self, other: Investor) -> float:
         """Exchange shares with ``other`` and return the number of shares moved.
 
-        Shares move only between a buyer and a seller, in proportion to the
-        average of the two sentiments times the seller's holdings, so holdings
-        never go negative and the market total is conserved.
+        Shares move only between a buyer and a seller. The seller parts with a
+        fraction of their holdings equal to the mean of the buyer's bullishness
+        and the seller's bearishness, so any buyer/seller pair trades and the
+        most convinced pairs trade the most. Holdings never go negative and the
+        market total is conserved.
         """
-        exchange_amount = 0.0
         if self.state == BUY and other.state == SELL:
-            exchange_amount = ((self.sentiment + other.sentiment) / 2) * other.holdings
-            exchange_amount = max(0.0, exchange_amount)
-            self.holdings += exchange_amount
-            other.holdings -= exchange_amount
+            buyer, seller = self, other
         elif self.state == SELL and other.state == BUY:
-            exchange_amount = ((self.sentiment + other.sentiment) / 2) * self.holdings
-            exchange_amount = max(0.0, exchange_amount)
-            self.holdings -= exchange_amount
-            other.holdings += exchange_amount
-        return exchange_amount
+            buyer, seller = other, self
+        else:
+            return 0.0
+        eagerness = (buyer.sentiment - seller.sentiment) / 2.0  # in (STATE_THRESHOLD, 1]
+        amount = eagerness * seller.holdings
+        seller.holdings -= amount
+        buyer.holdings += amount
+        return amount
 
 
 class Simulation:
-    """A single simulated market: a population of investors and a price series."""
+    """A single simulated market: a population of investors and a price series.
+
+    ``price_history``, ``volume_history``, ``buyers``, ``holders``, and
+    ``sellers`` all have one entry for the initial state plus one per step, so
+    they line up index-for-index.
+    """
 
     def __init__(
         self,
@@ -212,35 +272,63 @@ class Simulation:
         self.rng = rng if rng is not None else random.Random()
         self.current_price: float = self.config.start_price
         self.price_history: list[float] = [self.config.start_price]
+        self.volume_history: list[float] = [0.0]
         self.buyers: list[int] = []
         self.holders: list[int] = []
         self.sellers: list[int] = []
         self.investors: list[Investor] = self._create_investors()
+        self._record_states()
 
     def _create_investors(self) -> list[Investor]:
-        """Populate the market, allocating exactly ``max_shares`` across investors."""
+        """Populate the market, allocating exactly ``max_shares`` whole shares."""
         config, rng = self.config, self.rng
-        investors: list[Investor] = []
-        outstanding_shares = config.max_shares
-        for _ in range(config.num_investors):
-            # Uniform sentiment in [-1, 1), shifted by the skew and clamped.
-            sentiment = (rng.random() * 2.0 - 1.0) + (config.sentiment_skew * INITIAL_SKEW_WEIGHT)
-            sentiment = max(-1.0, min(1.0, sentiment))
+        count = config.num_investors
+        sentiments: list[float] = []
+        weights: list[float] = []
+        for _ in range(count):
+            # Uniform sentiment in [-1, 1), shifted by the narrative and clamped.
+            raw = (rng.random() * 2.0 - 1.0) + (config.sentiment_skew * INITIAL_SKEW_WEIGHT)
+            sentiments.append(_clamp_sentiment(raw))
+            weights.append(rng.uniform(HOLDINGS_WEIGHT_MIN, HOLDINGS_WEIGHT_MAX))
 
-            # Holdings drawn from 1%..10% of the remaining share pool.
-            norm = int(outstanding_shares * HOLDINGS_NORM_FRACTION)
-            holdings = rng.randint(int(norm * HOLDINGS_NORM_FRACTION), norm)
-            if outstanding_shares - holdings < 0:  # holdings boundary checking
-                holdings = 0
-            investors.append(Investor(sentiment=sentiment, holdings=float(holdings)))
-            outstanding_shares -= holdings
+        # Largest-remainder rounding: floor each proportional share, then hand
+        # the leftover whole shares to the largest fractional parts.
+        total_weight = sum(weights)
+        exact = [config.max_shares * weight / total_weight for weight in weights]
+        whole = [int(value) for value in exact]
+        leftover = config.max_shares - sum(whole)
+        by_fraction = sorted(range(count), key=lambda k: exact[k] - whole[k], reverse=True)
+        for index in by_fraction[:leftover]:
+            whole[index] += 1
 
-        # Hand out any stray shares round-robin starting at investor 0 (bulk
-        # equivalent of the original one-share-at-a-time loop).
-        base_extra, remainder = divmod(outstanding_shares, config.num_investors)
-        for index, investor in enumerate(investors):
-            investor.holdings += base_extra + (1 if index < remainder else 0)
-        return investors
+        return [
+            Investor(sentiment=sentiment, holdings=float(holdings))
+            for sentiment, holdings in zip(sentiments, whole, strict=True)
+        ]
+
+    def _record_states(self) -> None:
+        num_buyers, num_holders, num_sellers = count_states(self.investors)
+        self.buyers.append(num_buyers)
+        self.holders.append(num_holders)
+        self.sellers.append(num_sellers)
+
+    @property
+    def steps_completed(self) -> int:
+        """Number of steps run so far."""
+        return len(self.price_history) - 1
+
+    def narrative_sentiment(self) -> float:
+        """Return the social event's sentiment pull as of now, faded by its half-life."""
+        config = self.config
+        if math.isinf(config.narrative_half_life):
+            return config.sentiment_skew
+        return config.sentiment_skew * 0.5 ** (self.steps_completed / config.narrative_half_life)
+
+    def mispricing(self) -> float:
+        """Return ``ln(price / start_price)``, or 0.0 if the price has reached zero."""
+        if self.current_price <= 0:
+            return 0.0
+        return math.log(self.current_price / self.config.start_price)
 
     def market_sentiment(self) -> float:
         """Return the sum of all investor sentiments."""
@@ -255,57 +343,52 @@ class Simulation:
         return sum(investor.holdings for investor in self.investors)
 
     def step(self) -> None:
-        """Advance one time step: trade, update sentiments, then move the price."""
+        """Advance one time step: trade, update sentiments, then move the price.
+
+        Safe to call after the price has reached zero; the price then stays there.
+        """
         config, rng = self.config, self.rng
+        count = config.num_investors
 
-        # A randomly ordered copy of the investors; freezing the aggregate
-        # sentiment first means all investors update pseudo-parallelly.
-        shuffled = rng.sample(self.investors, config.num_investors)
-        total_sentiment = self.market_sentiment()
+        # Freeze the aggregate picture entering this step so that every
+        # investor trades and updates against the same market state.
+        num_buyers, _, num_sellers = count_states(self.investors)
+        excess_demand = (num_buyers - num_sellers) / count
+        narrative = self.narrative_sentiment()
+        mispricing = self.mispricing()
 
-        # Each investor trades with the next num_trades investors in the
-        # shuffled order. The j == 0 pairing is the investor itself, which is
-        # always a no-op (nobody is both buyer and seller), leaving
-        # num_trades - 1 real counterparties. Preserved as-is.
+        # Each investor trades with the next num_trades *other* investors in a
+        # randomly shuffled order.
+        shuffled = rng.sample(self.investors, count)
         volume = 0.0
-        for i in range(config.num_investors):
-            for j in range(config.num_trades):
-                volume += shuffled[i].trade(shuffled[(j + i) % config.num_investors])
+        for i in range(count):
+            for offset in range(1, config.num_trades + 1):
+                volume += shuffled[i].trade(shuffled[(i + offset) % count])
 
-        last_price_change = (
-            percent_change(self.price_history[-2], self.price_history[-1])
-            if len(self.price_history) > 1
-            else 0.0
-        )
-        mean_sentiment = total_sentiment / config.num_investors
+        history = self.price_history
+        last_price_change = 0.0
+        if len(history) > 1 and history[-2] > 0:
+            last_price_change = percent_change(history[-2], history[-1])
         for investor in shuffled:
-            investor.update_status(mean_sentiment, last_price_change, config, rng)
+            investor.update_status(narrative, last_price_change, mispricing, config, rng)
 
-        # Price impact: traded volume times aggregate sentiment, scaled by the
-        # total float and amplified by the asymmetric noise multiplier.
-        price_change = volume * total_sentiment / config.max_shares
-        price_change *= rng.random() * (PRICE_NOISE_MAX - PRICE_NOISE_MIN) + PRICE_NOISE_MIN
-        self.current_price += price_change
+        # Multiplicative price impact: proportional to the imbalance, plus noise.
+        fractional_change = PRICE_IMPACT * excess_demand + rng.gauss(0.0, RETURN_NOISE)
+        self.current_price *= max(0.0, 1.0 + fractional_change)
 
-        if rng.random() < config.panic_prob / MARKET_EVENT_DIVISOR:
-            # Unforeseen market event: random shock in [0.75, 1.25).
-            self.current_price *= (
-                rng.random() * (MARKET_SHOCK_MAX - MARKET_SHOCK_MIN) + MARKET_SHOCK_MIN
-            )
+        if rng.random() < config.shock_prob:
+            # Exogenous market shock: log-symmetric random rescale.
+            log_range = math.log(MARKET_SHOCK_MAX_FACTOR)
+            self.current_price *= math.exp(rng.uniform(-log_range, log_range))
 
-        # Price floor at zero; a run ends once the price reaches it.
-        self.current_price = max(self.current_price, 0.0)
         self.price_history.append(self.current_price)
-
-        num_buyers, num_holders, num_sellers = count_states(self.investors)
-        self.buyers.append(num_buyers)
-        self.holders.append(num_holders)
-        self.sellers.append(num_sellers)
+        self.volume_history.append(volume)
+        self._record_states()
 
     def run(self, max_steps: int = DEFAULT_STEPS) -> list[float]:
-        """Run up to ``max_steps`` steps, stopping early if the price hits zero.
+        """Run up to ``max_steps`` steps, stopping early if the price reaches zero.
 
-        Returns the price history (one entry per step plus the starting price).
+        Returns the price history (the starting price plus one entry per step).
         """
         for _ in range(max_steps):
             self.step()

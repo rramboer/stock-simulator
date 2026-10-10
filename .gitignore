@@ -21,5 +21,8 @@ htmlcov/
 .vscode/
 .idea/
 
-# Generated simulation output (the example charts committed in the repo root stay tracked)
+# Generated simulation output. The CLI's default output names are ignored; the
+# committed examples carry their sentiment in the file name (price_chart_<sentiment>.png).
 out/
+price_chart.png
+investor_chart.png
