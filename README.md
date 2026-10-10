@@ -38,32 +38,58 @@ Medians over 16 seeds of 500 steps with the defaults. "Peak" and "trough" are th
 
 ## Example output
 
-### A doom narrative
+One run per preset, each from a fixed seed so the charts are reproducible. The seeds were chosen to land near the median outcome for their preset (see the table above), not for drama. Each pair shows the price and the buyer/holder/seller counts for the same run.
 
-`uv run stock-simulator --sentiment VERY_BEAR --seed 42` (the defaults):
+### `VERY_BEAR` — a doom narrative (`--seed 42`)
 
-![Simulated stock price falling about 70% in the first 80 steps under a very bearish narrative, then drifting around the lower level](price_chart.png)
+| Price | Investors |
+| --- | --- |
+| ![Price falling about 70% in the first 80 steps under a very bearish narrative, then drifting around the lower level](price_chart_very_bear.png) | ![Sellers dominate early, then holders take over as the narrative fades](investor_chart_very_bear.png) |
 
 Sellers outnumber buyers more than two to one at the start. Each drop recruits more sellers through FOMO and the price loses about 70% in the first 80 steps. As the narrative fades the crowd goes quiet — mostly holders, with brief flare-ups on shocks — and the price drifts around its new level, finishing near −79%.
 
-![Counts of buyers, holders, and sellers over time: sellers dominate early, then holders take over as the narrative fades](investor_chart.png)
+### `BEARISH` (`--seed 12`)
 
-### A squeeze
+| Price | Investors |
+| --- | --- |
+| ![Price declining more gradually under a bearish narrative, bottoming near −64% around step 300](price_chart_bearish.png) | ![Sellers lead buyers by a smaller margin than in the very bearish run](investor_chart_bearish.png) |
 
-`uv run stock-simulator --sentiment VERY_BULL --seed 5 --price-chart price_chart_very_bull.png`:
+A milder story. Sellers still lead, but by less, so the decline is slower and shallower: about −64% at the low near step 300, settling around −56%.
 
-![Simulated stock price rising steeply under a very bullish narrative, peaking, and then giving part of the gain back](price_chart_very_bull.png)
+### `NEUTRAL` (`--seed 9`)
+
+| Price | Investors |
+| --- | --- |
+| ![Price wandering without a trend, dipping about 30% near step 70 and recovering](price_chart_neutral.png) | ![Buyers and sellers staying roughly balanced throughout](investor_chart_neutral.png) |
+
+No story to follow. Buyers and sellers stay roughly balanced and the price wanders, dipping about 30% around step 70 before recovering to end near −4%. Every move here comes from noise, shocks, and short-lived FOMO flurries.
+
+### `BULLISH` (`--seed 14`)
+
+| Price | Investors |
+| --- | --- |
+| ![Price roughly doubling under a bullish narrative and holding most of the gain](price_chart_bullish.png) | ![Buyers lead sellers while the narrative lasts](investor_chart_bullish.png) |
+
+The crowd leans bullish and FOMO does the rest: the price roughly doubles by step 240 and holds most of it, ending near +57%.
+
+### `VERY_BULL` — a squeeze (`--seed 5`)
+
+| Price | Investors |
+| --- | --- |
+| ![Price rising steeply under a very bullish narrative, peaking at +218% on step 115, then giving more than half of that back](price_chart_very_bull.png) | ![Buyers dominate during the run-up, then the crowd thins out after the peak](investor_chart_very_bull.png) |
 
 Buyers outnumber sellers more than two to one at the start (48 to 21). FOMO compounds each rise: the price is up 76% by step 50 and 173% by step 100, and peaks at +218% on step 115. By then the narrative's pull has halved twice, and panic flips and shocks take over: the price gives back more than half of the peak by step 200, bottoms around +25% near step 240, and ends near +58% — well above where it started, a long way below the top. Pass `--value-pull 0.1` to see the same event unwind all the way back.
 
 ### Regenerating the example charts
 
-Running the simulator from the repo root rewrites `price_chart.png` and `investor_chart.png` in place:
+By default the CLI writes `price_chart.png` and `investor_chart.png` in the current directory; those names are gitignored so experiments never clobber the committed examples. This regenerates all five pairs:
 
 ```sh
-uv run stock-simulator --seed 42
-uv run stock-simulator --sentiment VERY_BULL --seed 5 \
-  --price-chart price_chart_very_bull.png --investor-chart /tmp/investor_chart_very_bull.png
+for pair in VERY_BEAR:42 BEARISH:12 NEUTRAL:9 BULLISH:14 VERY_BULL:5; do
+  sentiment=${pair%:*}; seed=${pair#*:}; name=$(echo "$sentiment" | tr '[:upper:]' '[:lower:]')
+  uv run stock-simulator --sentiment "$sentiment" --seed "$seed" \
+    --price-chart "price_chart_$name.png" --investor-chart "investor_chart_$name.png"
+done
 ```
 
 Runs are randomized, so your charts will differ from the committed examples unless you pass `--seed`. Charts are always written headlessly with matplotlib's Agg backend — no display is needed, and no window is opened.
@@ -129,7 +155,7 @@ sim.volume_history  # shares traded per step
 
 - `src/stock_simulator/` — the package: `simulation.py` (the model), `plotting.py` (headless chart rendering), `cli.py` (argparse entry point)
 - `tests/` — pytest suite (rule-level tests with scripted random draws, model invariants, a pinned golden trajectory, statistical direction checks, CLI smoke tests)
-- `price_chart.png`, `investor_chart.png`, `price_chart_very_bull.png` — committed example charts used above
+- `price_chart_<sentiment>.png`, `investor_chart_<sentiment>.png` — committed example charts used above, one pair per preset
 
 ## Development
 
