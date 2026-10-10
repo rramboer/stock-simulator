@@ -107,6 +107,7 @@ def test_invalid_sentiment_rejected():
         ["--shock-prob", "1.01"],
         ["--narrative-half-life", "0"],
         ["--value-pull", "-1"],
+        ["--event-step", "-1"],
     ],
 )
 def test_invalid_numeric_arguments_rejected(argv, capsys):
@@ -134,6 +135,26 @@ def test_zero_trades_is_allowed(tmp_path):
     assert exit_code == 0
 
 
+def test_late_event_run_writes_charts(tmp_path):
+    exit_code = main(
+        [
+            "--event-step",
+            "10",
+            "--steps",
+            "30",
+            "--seed",
+            "2",
+            "--price-chart",
+            str(tmp_path / "price.png"),
+            "--investor-chart",
+            str(tmp_path / "investors.png"),
+        ]
+    )
+    assert exit_code == 0
+    assert (tmp_path / "price.png").stat().st_size > 0
+    assert (tmp_path / "investors.png").stat().st_size > 0
+
+
 def test_parser_defaults():
     args = build_parser().parse_args([])
     assert args.sentiment == "VERY_BEAR"
@@ -144,6 +165,7 @@ def test_parser_defaults():
     assert args.shock_prob == 0.025
     assert args.narrative_half_life == 50.0
     assert args.value_pull == 0.0
+    assert args.event_step == 0
     assert args.steps == 500
     assert args.seed is None
     assert args.price_chart == "price_chart.png"

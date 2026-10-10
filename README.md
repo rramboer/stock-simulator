@@ -9,7 +9,7 @@ Agent-based Monte Carlo simulator of what a social event does to a stock price. 
 
 ## How it works
 
-The market is 100 investors, each holding shares and carrying a sentiment in `[-1, 1]`. Sentiment above `+0.333` makes an investor a buyer, below `-0.333` a seller, and anything in between a holder. Everyone starts with their sentiment nudged toward the event's **narrative** (`--sentiment`), and then every time step:
+The market is 100 investors, each holding shares and carrying a sentiment in `[-1, 1]`. Sentiment above `+0.333` makes an investor a buyer, below `-0.333` a seller, and anything in between a holder. The social event hits at `--event-step` (step 0 by default): everyone's sentiment is jolted 0.3 toward its **narrative** (`--sentiment`), and before that moment the market is neutral. Then every time step:
 
 1. **Trading** — each investor trades with the next `--trades` investors in a randomly shuffled order. Shares only move from a seller to a buyer: the seller parts with a fraction of their holdings equal to the average of the buyer's bullishness and the seller's bearishness, so any buyer/seller pair trades and the most convinced pairs trade the most. The total share count is conserved. Traded volume is recorded but does not move the price by itself.
 2. **Sentiment updates** — each investor then:
@@ -124,6 +124,7 @@ Saved charts to price_chart.png and investor_chart.png
 | --- | --- | --- |
 | `--sentiment` | Narrative sentiment of the social event the run starts just after: `VERY_BEAR`, `BEARISH`, `NEUTRAL`, `BULLISH`, or `VERY_BULL` (mapped to −1 … 1) | `VERY_BEAR` |
 | `--narrative-half-life` | Steps for the narrative's pull on sentiment to halve; `inf` for a story that never fades | `50` |
+| `--event-step` | Time step at which the social event hits; the market is neutral before it, and both charts mark the moment with a dashed line | `0` |
 | `--investors` | Number of investors in the market | `100` |
 | `--trades` | Distinct counterparties each investor trades with per step; `0` disables trading | `5` |
 | `--fomo-threshold` | Per-step probability that an investor chases the last price move, in `[0, 1]` | `0.5` |
@@ -136,7 +137,7 @@ Saved charts to price_chart.png and investor_chart.png
 | `--investor-chart` | Output path for the investor chart PNG | `investor_chart.png` |
 | `--verbose` | Also print end-of-run market statistics (holdings, average sentiment, buyer/holder/seller counts) | off |
 
-Out-of-range values are rejected with a usage error. Two more parameters live in `SimulationConfig` (`src/stock_simulator/simulation.py`) rather than on the CLI: the starting price (`100.0`, which only scales the chart since every move is a percentage) and the total number of shares (`100,000`). The model's remaining constants — the noise levels, FOMO gain, panic damping, herding strength, and price impact — are named and documented at the top of that file. The simulation is also usable as a library:
+Try `--event-step 150` to watch a neutral market for 150 steps before the story breaks. Out-of-range values are rejected with a usage error. Two more parameters live in `SimulationConfig` (`src/stock_simulator/simulation.py`) rather than on the CLI: the starting price (`100.0`, which only scales the chart since every move is a percentage) and the total number of shares (`100,000`). The model's remaining constants — the noise levels, FOMO gain, panic damping, herding strength, and price impact — are named and documented at the top of that file. The simulation is also usable as a library:
 
 ```python
 import random

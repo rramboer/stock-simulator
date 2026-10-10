@@ -97,6 +97,7 @@ class TestSimulationConfig:
             {"narrative_half_life": 0.0},
             {"narrative_half_life": -10.0},
             {"value_pull": -0.1},
+            {"event_step": -1},
         ],
     )
     def test_invalid_values_rejected(self, kwargs):
@@ -109,6 +110,8 @@ class TestSimulationConfig:
         SimulationConfig(num_trades=99)
         SimulationConfig(fomo_threshold=0.0, panic_prob=1.0, shock_prob=1.0)
         SimulationConfig(narrative_half_life=math.inf)
+        SimulationConfig(event_step=0)
+        SimulationConfig(event_step=10_000)
 
 
 class TestInvestor:
@@ -431,3 +434,55 @@ class TestSimulation:
         assert history[500] == pytest.approx(21.139655257184522, rel=1e-9)
         end = (simulation.buyers[500], simulation.holders[500], simulation.sellers[500])
         assert end == (6, 87, 7)
+
+
+class TestEventStep:
+    def test_default_event_is_applied_before_the_first_recorded_state(self):
+        bull = Simulation(SimulationConfig(sentiment_skew=1.0), rng=random.Random(2))
+        neutral = Simulation(SimulationConfig(sentiment_skew=0.0), rng=random.Random(2))
+        assert bull.average_sentiment() > neutral.average_sentiment() + 0.2
+        assert bull.buyers[0] > neutral.buyers[0]
+
+    def test_market_is_neutral_until_the_event(self):
+        bull = SimulationConfig(sentiment_skew=SENTIMENT_SKEWS["VERY_BULL"], event_step=150)
+        neutral = SimulationConfig(sentiment_skew=SENTIMENT_SKEWS["NEUTRAL"])
+        with_event = Simulation(bull, rng=random.Random(3))
+        without = Simulation(neutral, rng=random.Random(3))
+        with_event.run(300)
+        without.run(300)
+        # Nothing about the event leaks backward: the two runs share every random
+        # draw, so they are identical up to and including the price at the event step.
+        assert with_event.price_history[:151] == without.price_history[:151]
+        assert with_event.volume_history[:151] == without.volume_history[:151]
+        assert with_event.buyers[:151] == without.buyers[:151]
+        assert with_event.price_history[151:] != without.price_history[151:]
+
+    def test_narrative_is_silent_before_the_event_then_fades(self):
+        config = SimulationConfig(sentiment_skew=-1.0, event_step=20, narrative_half_life=10.0)
+        simulation = Simulation(config, rng=random.Random(0))
+        assert simulation.narrative_sentiment() == 0.0
+        simulation.run(19)
+        assert simulation.narrative_sentiment() == 0.0
+        simulation.run(1)
+        assert simulation.narrative_sentiment() == pytest.approx(-1.0)
+        simulation.run(10)
+        assert simulation.narrative_sentiment() == pytest.approx(-0.5)
+
+    def test_event_jolts_sentiment_when_it_hits(self):
+        bull = SimulationConfig(sentiment_skew=SENTIMENT_SKEWS["VERY_BULL"], event_step=5)
+        neutral = SimulationConfig(sentiment_skew=SENTIMENT_SKEWS["NEUTRAL"])
+        with_event = Simulation(bull, rng=random.Random(8))
+        twin = Simulation(neutral, rng=random.Random(8))
+        with_event.run(5)
+        twin.run(5)
+        assert with_event.average_sentiment() == pytest.approx(twin.average_sentiment())
+        with_event.run(1)
+        twin.run(1)
+        assert with_event.average_sentiment() > twin.average_sentiment() + 0.1
+        assert with_event.buyers[-1] > twin.buyers[-1]
+
+    def test_event_after_the_run_ends_is_a_neutral_run(self):
+        bear = SimulationConfig(sentiment_skew=SENTIMENT_SKEWS["VERY_BEAR"], event_step=1_000)
+        late = Simulation(bear, rng=random.Random(1)).run(100)
+        neutral = Simulation(SimulationConfig(sentiment_skew=0.0), rng=random.Random(1)).run(100)
+        assert late == neutral
